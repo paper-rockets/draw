@@ -1,15 +1,15 @@
 import * as THREE from 'three';
-import { Point3D, Stroke, StrokeProfile } from '../types';
+import { StrokePoint, BrushSettings, StrokeProfile } from '../types';
 
 /**
  * Volumetric Stroke Geometry Generator
  * Supports 4 distinct geometric profiles:
  * - Tube: 360-degree cylindrical 3D mesh with spherical end-caps (equal volume from all angles)
- * - Ribbon: Flat tape-like cross-section aligned with drawing surface / normal plane
+ * - Ribbon: Flat tape-like cross-section aligned with drawing surface / plane
  * - Marker / Chisel: Asymmetric rectangular profile with calligraphic angle variation
  * - Conformal: Arched dome cross-section snapped to surface curvature
  *
- * Includes real-time Stylus Pressure Dynamics and Catmull-Rom resampling.
+ * Includes real-time Stylus Pressure Dynamics & Catmull-Rom resampling.
  */
 export class ConformalBeadGenerator {
   private raycaster: THREE.Raycaster;
@@ -19,53 +19,44 @@ export class ConformalBeadGenerator {
   }
 
   /**
-   * Builds volumetric stroke geometry from sampled points and stroke settings
+   * Builds volumetric stroke geometry from sampled points and brush profile settings
    */
   public generateGeometry(
-    stroke: Stroke,
+    rawPoints: StrokePoint[],
+    settings: BrushSettings,
     targetMeshes: THREE.Mesh[] = []
   ): THREE.BufferGeometry {
-    if (!stroke || !stroke.points || stroke.points.length === 0) {
-      return new THREE.BufferGeometry();
-    }
-
-    const rawPoints = stroke.points.filter(
-      (p) => p && typeof p.x === 'number' && typeof p.y === 'number' && typeof p.z === 'number'
-    );
-    if (rawPoints.length === 0) {
+    if (!rawPoints || rawPoints.length === 0) {
       return new THREE.BufferGeometry();
     }
 
     // Filter micro-jitter
-    const filteredPoints: Point3D[] = [rawPoints[0]];
+    const filteredPoints: StrokePoint[] = [rawPoints[0]];
     for (let i = 1; i < rawPoints.length; i++) {
       const prev = filteredPoints[filteredPoints.length - 1];
       const curr = rawPoints[i];
-      const distSq = (curr.x - prev.x) ** 2 + (curr.y - prev.y) ** 2 + (curr.z - prev.z) ** 2;
-      if (distSq > 0.00000064) {
+      if (prev.position.distanceTo(curr.position) > 0.0008) {
         filteredPoints.push(curr);
       }
     }
 
-    const profile: StrokeProfile =
-      stroke.profile || (stroke.brushType === 'conformal' ? 'conformal' : (stroke.brushType as StrokeProfile) || 'tube');
-    const brushSizeWorld = (stroke.size / 1000) * 0.5;
+    const profile: StrokeProfile = settings.profile || 'conformal';
 
     // Handle single dab
     if (filteredPoints.length === 1) {
-      return this.generateDabGeometry(filteredPoints[0], stroke, brushSizeWorld, profile, targetMeshes);
+      return this.generateDabGeometry(filteredPoints[0], settings, profile, targetMeshes);
     }
 
-    // Interpolate points along centripetal Catmull-Rom curve
+    // Interpolate points along centripetal Catmull-Rom curve with surface snapping
     const { positions, normals, pressures } = this.resampleCurve(
       filteredPoints,
-      brushSizeWorld,
+      settings.size,
       targetMeshes
     );
     const numPoints = positions.length;
 
     if (numPoints < 2) {
-      return this.generateDabGeometry(filteredPoints[0], stroke, brushSizeWorld, profile, targetMeshes);
+      return this.generateDabGeometry(filteredPoints[0], settings, profile, targetMeshes);
     }
 
     // Compute cumulative distances
@@ -76,8 +67,8 @@ export class ConformalBeadGenerator {
       cumulativeDistances.push(totalLength);
     }
 
-    const baseOffset = stroke.surfaceOffset ?? 0.003;
-    const taperLength = Math.max(0.01, stroke.taperLength ?? 0.05);
+    const baseOffset = settings.surfaceOffset ?? 0.003;
+    const taperLength = Math.max(0.01, settings.taperLength ?? 0.05);
 
     // Compute continuous tangent frames
     const tangents: THREE.Vector3[] = [];
@@ -101,7 +92,7 @@ export class ConformalBeadGenerator {
         tangent.normalize();
       }
 
-      let binormal = new THREE.Vector3().crossVectors(tangent, normal);
+      const binormal = new THREE.Vector3().crossVectors(tangent, normal);
       if (binormal.lengthSq() < 1e-6) {
         binormal.crossVectors(normal, new THREE.Vector3(0, 1, 0));
         if (binormal.lengthSq() < 1e-6) {
@@ -125,8 +116,7 @@ export class ConformalBeadGenerator {
           pressures,
           cumulativeDistances,
           totalLength,
-          stroke,
-          brushSizeWorld,
+          settings,
           baseOffset,
           taperLength
         );
@@ -139,8 +129,7 @@ export class ConformalBeadGenerator {
           pressures,
           cumulativeDistances,
           totalLength,
-          stroke,
-          brushSizeWorld,
+          settings,
           baseOffset,
           taperLength
         );
@@ -153,8 +142,7 @@ export class ConformalBeadGenerator {
           pressures,
           cumulativeDistances,
           totalLength,
-          stroke,
-          brushSizeWorld,
+          settings,
           baseOffset,
           taperLength
         );
@@ -168,8 +156,7 @@ export class ConformalBeadGenerator {
           pressures,
           cumulativeDistances,
           totalLength,
-          stroke,
-          brushSizeWorld,
+          settings,
           targetMeshes,
           baseOffset,
           taperLength
@@ -178,7 +165,7 @@ export class ConformalBeadGenerator {
   }
 
   /**
-   * 1. Tube Profile: Full 3D Cylindrical Geometry with equal volume from all angles and spherical end caps
+   * 1. Tube Profile: Full 3D Cylindrical Geometry with equal volume from all angles & spherical end caps
    */
   private buildTubeGeometry(
     positions: THREE.Vector3[],
@@ -188,18 +175,15 @@ export class ConformalBeadGenerator {
     pressures: number[],
     cumulativeDistances: number[],
     totalLength: number,
-    stroke: Stroke,
-    baseRadius: number,
+    settings: BrushSettings,
     baseOffset: number,
     taperLength: number
   ): THREE.BufferGeometry {
     const numPoints = positions.length;
     const radialSegments = 12;
-    const strokeColor = new THREE.Color(stroke.color || '#ff3b30');
     const vertices: number[] = [];
     const geomNormals: number[] = [];
     const uvs: number[] = [];
-    const colors: number[] = [];
     const indices: number[] = [];
 
     for (let i = 0; i < numPoints; i++) {
@@ -216,8 +200,8 @@ export class ConformalBeadGenerator {
       }
       taper = Math.max(0.05, Math.min(1.0, taper));
 
-      const pressureScale = stroke.pressureSensitive ? Math.max(0.2, pressures[i]) : 1.0;
-      const radius = baseRadius * pressureScale * taper;
+      const pressureScale = settings.pressureSensitivity ? Math.max(0.2, pressures[i]) : 1.0;
+      const radius = settings.size * pressureScale * taper;
 
       const center = pos.clone().addScaledVector(normal, baseOffset + radius);
 
@@ -231,7 +215,6 @@ export class ConformalBeadGenerator {
 
         vertices.push(vPos.x, vPos.y, vPos.z);
         geomNormals.push(radialDir.x, radialDir.y, radialDir.z);
-        colors.push(strokeColor.r, strokeColor.g, strokeColor.b);
         uvs.push(j / radialSegments, t);
       }
     }
@@ -251,46 +234,13 @@ export class ConformalBeadGenerator {
     }
 
     // Spherical Start and End Caps
-    this.addSphericalEndCap(
-      vertices,
-      geomNormals,
-      uvs,
-      colors,
-      indices,
-      strokeColor,
-      positions[0],
-      normals[0],
-      binormals[0],
-      tangents[0],
-      0,
-      radialSegments,
-      baseRadius * pressures[0],
-      baseOffset,
-      true
-    );
-    this.addSphericalEndCap(
-      vertices,
-      geomNormals,
-      uvs,
-      colors,
-      indices,
-      strokeColor,
-      positions[numPoints - 1],
-      normals[numPoints - 1],
-      binormals[numPoints - 1],
-      tangents[numPoints - 1],
-      (numPoints - 1) * radialSegments,
-      radialSegments,
-      baseRadius * pressures[numPoints - 1],
-      baseOffset,
-      false
-    );
+    this.addSphericalEndCap(vertices, geomNormals, uvs, indices, positions[0], normals[0], binormals[0], tangents[0], 0, radialSegments, settings.size * pressures[0], baseOffset, true);
+    this.addSphericalEndCap(vertices, geomNormals, uvs, indices, positions[numPoints - 1], normals[numPoints - 1], binormals[numPoints - 1], tangents[numPoints - 1], (numPoints - 1) * radialSegments, radialSegments, settings.size * pressures[numPoints - 1], baseOffset, false);
 
     const geom = new THREE.BufferGeometry();
     geom.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
     geom.setAttribute('normal', new THREE.Float32BufferAttribute(geomNormals, 3));
     geom.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-    geom.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
     geom.setIndex(indices);
     geom.computeVertexNormals();
     return geom;
@@ -307,17 +257,14 @@ export class ConformalBeadGenerator {
     pressures: number[],
     cumulativeDistances: number[],
     totalLength: number,
-    stroke: Stroke,
-    baseRadius: number,
+    settings: BrushSettings,
     baseOffset: number,
     taperLength: number
   ): THREE.BufferGeometry {
     const numPoints = positions.length;
-    const strokeColor = new THREE.Color(stroke.color || '#ff3b30');
     const vertices: number[] = [];
     const geomNormals: number[] = [];
     const uvs: number[] = [];
-    const colors: number[] = [];
     const indices: number[] = [];
 
     for (let i = 0; i < numPoints; i++) {
@@ -334,8 +281,8 @@ export class ConformalBeadGenerator {
       }
       taper = Math.max(0.05, Math.min(1.0, taper));
 
-      const pressureScale = stroke.pressureSensitive ? Math.max(0.2, pressures[i]) : 1.0;
-      const width = baseRadius * pressureScale * taper * 1.5;
+      const pressureScale = settings.pressureSensitivity ? Math.max(0.2, pressures[i]) : 1.0;
+      const width = settings.size * pressureScale * taper * 1.5;
 
       const elevatedPos = pos.clone().addScaledVector(normal, baseOffset);
       const left = elevatedPos.clone().addScaledVector(binormal, -width);
@@ -343,12 +290,10 @@ export class ConformalBeadGenerator {
 
       vertices.push(left.x, left.y, left.z);
       geomNormals.push(normal.x, normal.y, normal.z);
-      colors.push(strokeColor.r, strokeColor.g, strokeColor.b);
       uvs.push(0.0, t);
 
       vertices.push(right.x, right.y, right.z);
       geomNormals.push(normal.x, normal.y, normal.z);
-      colors.push(strokeColor.r, strokeColor.g, strokeColor.b);
       uvs.push(1.0, t);
     }
 
@@ -366,7 +311,6 @@ export class ConformalBeadGenerator {
     geom.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
     geom.setAttribute('normal', new THREE.Float32BufferAttribute(geomNormals, 3));
     geom.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-    geom.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
     geom.setIndex(indices);
     geom.computeVertexNormals();
     return geom;
@@ -383,21 +327,18 @@ export class ConformalBeadGenerator {
     pressures: number[],
     cumulativeDistances: number[],
     totalLength: number,
-    stroke: Stroke,
-    baseRadius: number,
+    settings: BrushSettings,
     baseOffset: number,
     taperLength: number
   ): THREE.BufferGeometry {
     const numPoints = positions.length;
-    const strokeColor = new THREE.Color(stroke.color || '#ff3b30');
     const vertices: number[] = [];
     const geomNormals: number[] = [];
     const uvs: number[] = [];
-    const colors: number[] = [];
     const indices: number[] = [];
 
-    const chiselAngleRad = ((stroke.chiselAngle ?? 45) * Math.PI) / 180;
-    const aspectRatio = stroke.aspectRatio ?? 3.5;
+    const chiselAngleRad = ((settings.chiselAngle ?? 45) * Math.PI) / 180;
+    const aspectRatio = settings.aspectRatio ?? 3.5; // width to thickness
 
     for (let i = 0; i < numPoints; i++) {
       const pos = positions[i];
@@ -414,19 +355,17 @@ export class ConformalBeadGenerator {
       }
       taper = Math.max(0.05, Math.min(1.0, taper));
 
-      const pressureScale = stroke.pressureSensitive ? Math.max(0.2, pressures[i]) : 1.0;
-      const currentBaseRadius = baseRadius * pressureScale * taper;
-      const width = currentBaseRadius * aspectRatio * 0.7;
-      const height = currentBaseRadius * 0.35;
+      const pressureScale = settings.pressureSensitivity ? Math.max(0.2, pressures[i]) : 1.0;
+      const baseRadius = settings.size * pressureScale * taper;
+      const width = baseRadius * aspectRatio * 0.7;
+      const height = baseRadius * 0.35;
 
-      const chiselDir = binormal
-        .clone()
-        .multiplyScalar(Math.cos(chiselAngleRad))
-        .addScaledVector(tangent, Math.sin(chiselAngleRad))
-        .normalize();
+      // Rotate chisel plane around surface normal by fixed chisel angle
+      const chiselDir = binormal.clone().multiplyScalar(Math.cos(chiselAngleRad)).addScaledVector(tangent, Math.sin(chiselAngleRad)).normalize();
 
       const center = pos.clone().addScaledVector(normal, baseOffset + height);
 
+      // 4 corners of rectangular chisel profile: Top-Left, Top-Right, Bottom-Right, Bottom-Left
       const pTL = center.clone().addScaledVector(chiselDir, -width).addScaledVector(normal, height);
       const pTR = center.clone().addScaledVector(chiselDir, width).addScaledVector(normal, height);
       const pBR = center.clone().addScaledVector(chiselDir, width).addScaledVector(normal, -height);
@@ -436,7 +375,6 @@ export class ConformalBeadGenerator {
       for (let k = 0; k < 4; k++) {
         vertices.push(corners[k].x, corners[k].y, corners[k].z);
         geomNormals.push(normal.x, normal.y, normal.z);
-        colors.push(strokeColor.r, strokeColor.g, strokeColor.b);
         uvs.push(k / 3, t);
       }
     }
@@ -458,14 +396,13 @@ export class ConformalBeadGenerator {
     geom.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
     geom.setAttribute('normal', new THREE.Float32BufferAttribute(geomNormals, 3));
     geom.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-    geom.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
     geom.setIndex(indices);
     geom.computeVertexNormals();
     return geom;
   }
 
   /**
-   * 4. Conformal Profile: Arched Dome Conformal Cross Section with surface adherence
+   * 4. Conformal Profile: Arched Dome Conformal Cross Section
    */
   private buildConformalGeometry(
     positions: THREE.Vector3[],
@@ -475,15 +412,13 @@ export class ConformalBeadGenerator {
     pressures: number[],
     cumulativeDistances: number[],
     totalLength: number,
-    stroke: Stroke,
-    baseRadius: number,
+    settings: BrushSettings,
     targetMeshes: THREE.Mesh[],
     baseOffset: number,
     taperLength: number
   ): THREE.BufferGeometry {
     const numPoints = positions.length;
-    const segmentsAcross = Math.max(3, stroke.archSegments || 5);
-    const strokeColor = new THREE.Color(stroke.color || '#ff3b30');
+    const segmentsAcross = Math.max(3, settings.archSegments || 5);
     const uValues: number[] = [];
     for (let j = 0; j < segmentsAcross; j++) {
       uValues.push(-1.0 + (2.0 * j) / (segmentsAcross - 1));
@@ -492,10 +427,9 @@ export class ConformalBeadGenerator {
     const vertices: number[] = [];
     const geomNormals: number[] = [];
     const uvs: number[] = [];
-    const colors: number[] = [];
     const indices: number[] = [];
 
-    const domeFactor = stroke.domeFactor || 0.22;
+    const domeFactor = settings.domeFactor || 0.22;
 
     for (let i = 0; i < numPoints; i++) {
       const pos = positions[i];
@@ -511,25 +445,23 @@ export class ConformalBeadGenerator {
       }
       taper = Math.max(0.02, Math.min(1.0, taper));
 
-      const pressureScale = stroke.pressureSensitive ? Math.max(0.2, pressures[i]) : 1.0;
-      const ringRadius = baseRadius * pressureScale * taper;
+      const pressureScale = settings.pressureSensitivity ? Math.max(0.2, pressures[i]) : 1.0;
+      const ringRadius = settings.size * pressureScale * taper;
 
       for (let j = 0; j < segmentsAcross; j++) {
         const u = uValues[j];
         const domeHeight = baseOffset + ringRadius * domeFactor * Math.sqrt(Math.max(0, 1.0 - u * u));
         const lateralOffset = u * ringRadius;
 
-        const idealPos = pos
-          .clone()
+        const idealPos = pos.clone()
           .addScaledVector(binormal, lateralOffset)
           .addScaledVector(normal, domeHeight);
 
         let finalPos = idealPos;
         let finalNormal = normal.clone();
 
-        if (targetMeshes.length > 0 && stroke.silhouetteClamping) {
-          const rayOrigin = pos
-            .clone()
+        if (targetMeshes.length > 0 && settings.silhouetteClamping) {
+          const rayOrigin = pos.clone()
             .addScaledVector(binormal, lateralOffset)
             .addScaledVector(normal, ringRadius * 1.5 + baseOffset + 0.02);
           const rayDir = normal.clone().negate().normalize();
@@ -540,25 +472,21 @@ export class ConformalBeadGenerator {
 
           if (hits.length > 0 && hits[0].point) {
             const hit = hits[0];
-            const hitNormal = hit.face
-              ? hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize()
-              : normal;
+            const hitNormal = hit.face ? hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize() : normal;
             finalPos = hit.point.clone().addScaledVector(hitNormal, domeHeight);
             finalNormal = hitNormal;
           } else {
             const clampedLateral = u * ringRadius * 0.4;
-            finalPos = pos
-              .clone()
+            finalPos = pos.clone()
               .addScaledVector(binormal, clampedLateral)
               .addScaledVector(normal, baseOffset * 0.8);
           }
         }
 
-        const archNormal = finalNormal.clone().addScaledVector(binormal, u * 0.4).normalize();
+        const archNormal = normal.clone().addScaledVector(binormal, u * 0.4).normalize();
 
         vertices.push(finalPos.x, finalPos.y, finalPos.z);
         geomNormals.push(archNormal.x, archNormal.y, archNormal.z);
-        colors.push(strokeColor.r, strokeColor.g, strokeColor.b);
         uvs.push((u + 1.0) * 0.5, t);
       }
     }
@@ -576,59 +504,27 @@ export class ConformalBeadGenerator {
     }
 
     // Add Start and End Caps
-    this.addEndCap(
-      vertices,
-      geomNormals,
-      uvs,
-      colors,
-      indices,
-      strokeColor,
-      positions[0],
-      normals[0],
-      binormals[0],
-      tangents[0],
-      0,
-      segmentsAcross,
-      baseRadius * pressures[0],
-      baseOffset,
-      true
-    );
-    this.addEndCap(
-      vertices,
-      geomNormals,
-      uvs,
-      colors,
-      indices,
-      strokeColor,
-      positions[numPoints - 1],
-      normals[numPoints - 1],
-      binormals[numPoints - 1],
-      tangents[numPoints - 1],
-      (numPoints - 1) * segmentsAcross,
-      segmentsAcross,
-      baseRadius * pressures[numPoints - 1],
-      baseOffset,
-      false
-    );
+    this.addEndCap(vertices, geomNormals, uvs, indices, positions[0], normals[0], binormals[0], tangents[0], 0, segmentsAcross, settings.size * pressures[0], baseOffset, true);
+    this.addEndCap(vertices, geomNormals, uvs, indices, positions[numPoints - 1], normals[numPoints - 1], binormals[numPoints - 1], tangents[numPoints - 1], (numPoints - 1) * segmentsAcross, segmentsAcross, settings.size * pressures[numPoints - 1], baseOffset, false);
 
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
     geometry.setAttribute('normal', new THREE.Float32BufferAttribute(geomNormals, 3));
     geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-    geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
     geometry.setIndex(indices);
     geometry.computeVertexNormals();
 
     return geometry;
   }
 
+  /**
+   * Adds rounded dome cap for conformal profile
+   */
   private addEndCap(
     vertices: number[],
     geomNormals: number[],
     uvs: number[],
-    colors: number[],
     indices: number[],
-    strokeColor: THREE.Color,
     centerPos: THREE.Vector3,
     normal: THREE.Vector3,
     binormal: THREE.Vector3,
@@ -640,15 +536,13 @@ export class ConformalBeadGenerator {
     isStart: boolean
   ): void {
     const tipDir = isStart ? tangent.clone().negate() : tangent.clone();
-    const tipPos = centerPos
-      .clone()
+    const tipPos = centerPos.clone()
       .addScaledVector(tipDir, radius * 0.35)
       .addScaledVector(normal, baseOffset + radius * 0.15);
 
     const tipVertexIdx = vertices.length / 3;
     vertices.push(tipPos.x, tipPos.y, tipPos.z);
     geomNormals.push(normal.x, normal.y, normal.z);
-    colors.push(strokeColor.r, strokeColor.g, strokeColor.b);
     uvs.push(0.5, isStart ? 0.0 : 1.0);
 
     for (let j = 0; j < segmentsAcross - 1; j++) {
@@ -662,13 +556,14 @@ export class ConformalBeadGenerator {
     }
   }
 
+  /**
+   * Adds spherical cap for tube profile
+   */
   private addSphericalEndCap(
     vertices: number[],
     geomNormals: number[],
     uvs: number[],
-    colors: number[],
     indices: number[],
-    strokeColor: THREE.Color,
     centerPos: THREE.Vector3,
     normal: THREE.Vector3,
     binormal: THREE.Vector3,
@@ -680,15 +575,13 @@ export class ConformalBeadGenerator {
     isStart: boolean
   ): void {
     const tipDir = isStart ? tangent.clone().negate() : tangent.clone();
-    const tipPos = centerPos
-      .clone()
+    const tipPos = centerPos.clone()
       .addScaledVector(normal, baseOffset + radius)
       .addScaledVector(tipDir, radius);
 
     const tipIdx = vertices.length / 3;
     vertices.push(tipPos.x, tipPos.y, tipPos.z);
     geomNormals.push(tipDir.x, tipDir.y, tipDir.z);
-    colors.push(strokeColor.r, strokeColor.g, strokeColor.b);
     uvs.push(0.5, isStart ? 0.0 : 1.0);
 
     for (let j = 0; j < radialSegments; j++) {
@@ -703,20 +596,19 @@ export class ConformalBeadGenerator {
     }
   }
 
+  /**
+   * Generates a dab geometry for single-point clicks across profiles
+   */
   private generateDabGeometry(
-    point: Point3D,
-    stroke: Stroke,
-    baseRadius: number,
+    point: StrokePoint,
+    settings: BrushSettings,
     profile: StrokeProfile,
     targetMeshes: THREE.Mesh[] = []
   ): THREE.BufferGeometry {
-    const normal = point.normal
-      ? new THREE.Vector3(point.normal.x, point.normal.y, point.normal.z).normalize()
-      : new THREE.Vector3(0, 1, 0);
-    const pressureScale = stroke.pressureSensitive ? Math.max(0.3, point.pressure) : 1.0;
-    const radius = baseRadius * pressureScale;
-    const baseOffset = stroke.surfaceOffset ?? 0.0025;
-    const strokeColor = new THREE.Color(stroke.color || '#ff3b30');
+    const normal = point.normal.clone().normalize();
+    const pressureScale = settings.pressureSensitivity ? Math.max(0.3, point.pressure) : 1.0;
+    const radius = settings.size * pressureScale;
+    const baseOffset = settings.surfaceOffset ?? 0.0025;
 
     let tangent = new THREE.Vector3(0, 1, 0);
     if (Math.abs(normal.y) > 0.9) {
@@ -730,41 +622,36 @@ export class ConformalBeadGenerator {
     const vertices: number[] = [];
     const normals: number[] = [];
     const uvs: number[] = [];
-    const colors: number[] = [];
     const indices: number[] = [];
 
     const apexHeight = baseOffset + radius * (profile === 'tube' ? 1.0 : 0.18);
-    const apex = new THREE.Vector3(point.x, point.y, point.z).addScaledVector(normal, apexHeight);
+    const apex = point.position.clone().addScaledVector(normal, apexHeight);
     vertices.push(apex.x, apex.y, apex.z);
     normals.push(normal.x, normal.y, normal.z);
-    colors.push(strokeColor.r, strokeColor.g, strokeColor.b);
     uvs.push(0.5, 0.5);
 
     for (let r = 1; r <= rings; r++) {
       const ringFraction = r / rings;
       const ringRadius = radius * ringFraction;
-      const domeHeight =
-        baseOffset + radius * 0.18 * Math.sqrt(Math.max(0, 1.0 - ringFraction * ringFraction));
+      const domeHeight = baseOffset + radius * 0.18 * Math.sqrt(Math.max(0, 1.0 - ringFraction * ringFraction));
 
       for (let s = 0; s < radialSegments; s++) {
         const theta = (s / radialSegments) * Math.PI * 2;
         const cosT = Math.cos(theta);
         const sinT = Math.sin(theta);
 
-        const vPos = new THREE.Vector3(point.x, point.y, point.z)
+        const vPos = point.position.clone()
           .addScaledVector(tangent, cosT * ringRadius)
           .addScaledVector(binormal, sinT * ringRadius)
           .addScaledVector(normal, domeHeight);
 
-        const vNorm = normal
-          .clone()
+        const vNorm = normal.clone()
           .addScaledVector(tangent, cosT * 0.3)
           .addScaledVector(binormal, sinT * 0.3)
           .normalize();
 
         vertices.push(vPos.x, vPos.y, vPos.z);
         normals.push(vNorm.x, vNorm.y, vNorm.z);
-        colors.push(strokeColor.r, strokeColor.g, strokeColor.b);
         uvs.push(0.5 + cosT * ringFraction * 0.5, 0.5 + sinT * ringFraction * 0.5);
       }
     }
@@ -793,29 +680,29 @@ export class ConformalBeadGenerator {
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
     geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
     geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-    geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
     geometry.setIndex(indices);
     geometry.computeVertexNormals();
 
     return geometry;
   }
 
+  /**
+   * Resamples raw points using centripetal Catmull-Rom spline interpolation
+   */
   private resampleCurve(
-    points: Point3D[],
+    points: StrokePoint[],
     brushSize: number,
     targetMeshes: THREE.Mesh[] = []
   ): { positions: THREE.Vector3[]; normals: THREE.Vector3[]; pressures: number[] } {
     if (points.length < 2) {
       return {
-        positions: points.map((p) => new THREE.Vector3(p.x, p.y, p.z)),
-        normals: points.map((p) =>
-          p.normal ? new THREE.Vector3(p.normal.x, p.normal.y, p.normal.z).normalize() : new THREE.Vector3(0, 1, 0)
-        ),
+        positions: points.map((p) => p.position.clone()),
+        normals: points.map((p) => p.normal.clone()),
         pressures: points.map((p) => p.pressure),
       };
     }
 
-    const vectorPoints = points.map((p) => new THREE.Vector3(p.x, p.y, p.z));
+    const vectorPoints = points.map((p) => p.position);
     const curve = new THREE.CatmullRomCurve3(vectorPoints, false, 'centripetal', 0.5);
 
     const stepSize = Math.max(0.005, brushSize * 0.35);
@@ -834,13 +721,8 @@ export class ConformalBeadGenerator {
       const idxB = Math.min(points.length - 1, idxA + 1);
       const frac = rawIndex - idxA;
 
-      const normA = points[idxA].normal
-        ? new THREE.Vector3(points[idxA].normal!.x, points[idxA].normal!.y, points[idxA].normal!.z)
-        : new THREE.Vector3(0, 1, 0);
-      const normB = points[idxB].normal
-        ? new THREE.Vector3(points[idxB].normal!.x, points[idxB].normal!.y, points[idxB].normal!.z)
-        : new THREE.Vector3(0, 1, 0);
-
+      const normA = points[idxA].normal;
+      const normB = points[idxB].normal;
       const interpNorm = new THREE.Vector3().copy(normA).lerp(normB, frac).normalize();
       const pos = rawPoints[i].clone();
 
@@ -859,3 +741,4 @@ export class ConformalBeadGenerator {
     };
   }
 }
+

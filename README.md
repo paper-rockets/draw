@@ -1,77 +1,20 @@
-# Feather 3D - Spatial Sketching Studio
+<div align="center">
+<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
+</div>
 
-High-performance 3D spatial sketching, procedural 3D guides, volumetric brush strokes, and real-time NPR rendering on tablet and desktop.
+# Run and deploy your AI Studio app
 
-### Live Web Demo
+This contains everything you need to run your app locally.
 
-Access the live web demo:
-**https://paper-rockets.github.io/draw/**
+View your app in AI Studio: https://ai.studio/apps/6fb6512a-a12c-45a2-a7e2-00a46981f8c1
 
----
+## Run Locally
 
-## Features
+**Prerequisites:**  Node.js
 
-- **Volumetric 3D Brush Extrusion**: Real-time extrusion supporting Tube, Ribbon, Marker, and Flat stroke geometries with pressure dynamics and spline smoothing.
-- **Procedural 3D Guides & Colliders**: Raycast onto 3D surfaces, planes, cylinders, spheres, loft surfaces, and imported 3D mesh models (GLB/GLTF/OBJ).
-- **Cel & Toon NPR Shading**: Real-time non-photorealistic shading pipeline with custom light bands, rim lighting, specular highlights, and procedural patterns (dots, lines, crosses, terrazzo, stipple).
-- **Procedural Wanderlust Sky Dome**: Animated day/dusk/night atmospheric sky with procedural clouds, sun glow, and starfields.
-- **Progressive Web App (PWA)**: Installable standalone app with offline caching, touch optimization, palm rejection, and stylus barrel button radial squeeze menus.
-- **Multi-Format 3D Export**: Export projects to GLTF 2.0 / GLB, OBJ, STL, USDZ, turntable video recording, and high-resolution captures.
-- **Spatial Hierarchy & History**: Layer management with visibility, locking, isolation, unlimited undo/redo history, and visual autosave snapshots.
 
----
-
-## Progressive Web App (PWA)
-
-Feather 3D is configured as an installable Progressive Web App.
-
-- **Desktop (Chrome / Edge / Brave)**: Click the Install icon in the browser address bar to install as a standalone desktop application.
-- **iOS / iPadOS (Safari)**: Tap Share -> Add to Home Screen.
-- **Android (Chrome)**: Tap the menu -> Install app.
-
-Offline asset caching is handled automatically by the background Service Worker.
-
----
-
-## Getting Started Locally
-
-### Prerequisites
-
-- Node.js (v18 or higher)
-- npm or bun
-
-### Installation
-
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/paper-rockets/draw.git
-   cd draw
-   ```
-
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
-
-3. Start development server:
-   ```bash
-   npm run dev
-   ```
-   Open `http://localhost:3000` in your browser.
-
-4. Build for production:
-   ```bash
-   npm run build
-   ```
-
----
-
-## Deployment
-
-Continuous deployment is configured via GitHub Actions in `.github/workflows/deploy.yml`. Pushes to the `main` branch automatically build and publish the distribution bundle to GitHub Pages.
-
----
-
-## License
-
-MIT License. See project files for details.
+1. Install dependencies:
+   `npm install`
+2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+3. Run the app:
+   `npm run dev`

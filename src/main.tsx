@@ -8,17 +8,3 @@ createRoot(document.getElementById('root')!).render(
     <App />
   </StrictMode>,
 );
-
-// Register Progressive Web App Service Worker
-if ('serviceWorker' in navigator && process.env.NODE_ENV === 'production') {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker
-      .register('./sw.js', { scope: './' })
-      .then((reg) => {
-        console.log('PWA Service Worker active with scope:', reg.scope);
-      })
-      .catch((err) => {
-        console.warn('PWA Service Worker registration failed:', err);
-      });
-  });
-}

@@ -1,6 +1,6 @@
 {
-  "name": "Feather 3D - Spatial Sketching Studio",
-  "description": "High-performance 3D spatial sketching, procedural 3D guides, volumetric brush strokes, and real-time NPR rendering on tablet and desktop.",
+  "name": "3D Model Painting Studio",
+  "description": "Zero-clipping 3D model drawing and surface painting studio with conformal surface snapping, dynamic UV painting, and advanced mesh export.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

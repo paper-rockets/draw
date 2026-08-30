@@ -1,7 +1,8 @@
-import { SmoothingAlgorithm } from '../types';
+import * as THREE from 'three';
+import { SmoothingAlgorithm, StrokePoint } from '../types';
 
 /**
- * Low-Pass 1-Euro Filter component for jitter-free real-time drawing
+ * Low-Pass 1-Euro Filter component
  */
 class OneEuroFilter1D {
   private xPrev: number | null = null;
@@ -125,7 +126,7 @@ class KalmanPredictive2D {
 }
 
 /**
- * Real-time Stroke Smoother and Predictive Surface Contact Optimizer
+ * Real-time Stroke Smoother & Predictive Mesh Contact Optimizer
  */
 export class StrokeSmoother {
   private euroX = new OneEuroFilter1D();
@@ -152,10 +153,10 @@ export class StrokeSmoother {
     rawX: number,
     rawY: number,
     pressure: number,
-    algorithm: SmoothingAlgorithm = 'one_euro',
-    strength: number = 0.5, // 0.0 to 1.0
-    predictive: boolean = true,
-    predictionFactor: number = 0.4, // 0.0 to 1.0
+    algorithm: SmoothingAlgorithm,
+    strength: number, // 0.0 to 1.0
+    predictive: boolean,
+    predictionFactor: number, // 0.0 to 1.0
     timestamp: number = performance.now()
   ): { x: number; y: number; pressure: number } {
     if (algorithm === 'none' && !predictive) {
@@ -169,7 +170,7 @@ export class StrokeSmoother {
 
     switch (algorithm) {
       case 'one_euro': {
-        // High strength = lower minCutoff (higher stability at low speed) and lower beta
+        // High strength = lower minCutoff (higher stability at low speed) & lower beta
         const minCutoff = Math.max(0.1, 3.5 * (1.0 - strength * 0.85));
         const beta = 0.02 + (1.0 - strength) * 0.25;
         this.euroX.setParams(minCutoff, beta);
@@ -180,8 +181,8 @@ export class StrokeSmoother {
         outP = this.euroPressure.filter(pressure, timestamp);
 
         if (predictive && this.lastSmoothed) {
-          const vx = outX - this.lastSmoothed.x;
-          const vy = outY - this.lastSmoothed.y;
+          const vx = (outX - this.lastSmoothed.x);
+          const vy = (outY - this.lastSmoothed.y);
           outX += vx * (predictionFactor * 1.5);
           outY += vy * (predictionFactor * 1.5);
         }
@@ -189,8 +190,9 @@ export class StrokeSmoother {
       }
 
       case 'kalman': {
-        const lead = predictive ? predictionFactor * 0.8 + 0.2 : 0.0;
+        const lead = predictive ? (predictionFactor * 0.8 + 0.2) : 0.0;
         const res = this.kalman.update(rawX, rawY, timestamp, lead);
+        // Blend with raw based on strength
         const blend = 0.2 + strength * 0.8;
         outX = rawX * (1 - blend) + res.x * blend;
         outY = rawY * (1 - blend) + res.y * blend;
@@ -202,6 +204,7 @@ export class StrokeSmoother {
         this.historyWindow.push({ x: rawX, y: rawY, time: timestamp });
         if (this.historyWindow.length > 8) this.historyWindow.shift();
 
+        // Weighted moving average with exponential falloff
         let weightSum = 0;
         let sumX = 0;
         let sumY = 0;
@@ -234,8 +237,9 @@ export class StrokeSmoother {
           outX = rawX;
           outY = rawY;
         } else {
+          // Velocity-adaptive smoothing factor
           const dist = Math.hypot(rawX - this.lastSmoothed.x, rawY - this.lastSmoothed.y);
-          const dynamicAlpha = Math.min(0.95, Math.max(0.1, 1.0 - strength * 0.75 + dist * 5.0));
+          const dynamicAlpha = Math.min(0.95, Math.max(0.1, (1.0 - strength * 0.75) + dist * 5.0));
           outX = this.lastSmoothed.x + (rawX - this.lastSmoothed.x) * dynamicAlpha;
           outY = this.lastSmoothed.y + (rawY - this.lastSmoothed.y) * dynamicAlpha;
 
