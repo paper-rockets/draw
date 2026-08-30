@@ -1,0 +1,6 @@
+{
+  "name": "Feather 3D - Spatial Sketching Studio",
+  "description": "High-performance 3D spatial sketching, procedural 3D guides, volumetric brush strokes, and real-time NPR rendering on tablet and desktop.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
