@@ -62,7 +62,7 @@ export const SnapshotHistoryModal: React.FC<SnapshotHistoryModalProps> = ({
 
   const handleConfirmRestore = (snapshot: ProjectSnapshot) => {
     onRestoreSnapshot(snapshot);
-    setSuccessToast(`Restored checkpoint "${snapshot.title}"`);
+    setSuccessToast(`Restored checkpoint "${snapshot.projectTitle}"`);
     setConfirmRestoreId(null);
     setTimeout(() => {
       setSuccessToast(null);

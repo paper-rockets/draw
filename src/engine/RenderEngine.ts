@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { MaterialType, ProceduralPattern, EnvironmentConfig, EnvironmentPreset } from '../types';
+import { MaterialType, ProceduralPattern, EnvironmentConfig, EnvironmentPreset, Guide3D } from '../types';
 import { createWanderlustToonMaterial } from './WanderlustToonShader';
 
 export class RenderEngine {
@@ -194,6 +194,7 @@ export class RenderEngine {
     contrast: number = 1.0
   ): THREE.CanvasTexture | null {
     if (pattern === 'none') return null;
+    if (typeof document === 'undefined') return null;
 
     const size = 512;
     const canvas = document.createElement('canvas');
@@ -474,6 +475,167 @@ export class RenderEngine {
     const z = groundDist * Math.sin(azRad);
 
     return new THREE.Vector3(x, y, z).normalize();
+  }
+
+  /**
+   * Builds an interactive 3D Guide Object (Drawing Plane or 3D Primitive Guide)
+   */
+  static createGuideObject(guide: Guide3D): THREE.Group {
+    const group = new THREE.Group();
+    group.name = `Guide-${guide.id}`;
+
+    const width = guide.width || 4.0;
+    const height = guide.height || 4.0;
+    const depth = guide.depth || width;
+    const segments = Math.max(4, guide.segments || 16);
+    const opacity = typeof guide.opacity === 'number' ? guide.opacity : 0.85;
+
+    const surfaceMat = new THREE.MeshBasicMaterial({
+      color: 0x3b82f6,
+      transparent: true,
+      opacity: 0.08 * (opacity / 0.85),
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+
+    const gridLineMat = new THREE.LineBasicMaterial({
+      color: 0x60a5fa,
+      transparent: true,
+      opacity: 0.35 * (opacity / 0.85),
+    });
+
+    const borderLineMat = new THREE.LineBasicMaterial({
+      color: 0x3b82f6,
+      transparent: true,
+      opacity: 0.75 * (opacity / 0.85),
+    });
+
+    const axisXMat = new THREE.LineBasicMaterial({
+      color: 0xef4444,
+      transparent: true,
+      opacity: 0.8,
+    });
+
+    const axisYMat = new THREE.LineBasicMaterial({
+      color: 0x10b981,
+      transparent: true,
+      opacity: 0.8,
+    });
+
+    switch (guide.type) {
+      case 'cube': {
+        const boxGeo = new THREE.BoxGeometry(width, height, depth);
+        const mesh = new THREE.Mesh(boxGeo, surfaceMat);
+        mesh.userData = { isGuide: true, guideId: guide.id };
+        group.add(mesh);
+
+        const edgesGeo = new THREE.EdgesGeometry(boxGeo);
+        const edges = new THREE.LineSegments(edgesGeo, borderLineMat);
+        group.add(edges);
+        break;
+      }
+      case 'sphere': {
+        const sphereGeo = new THREE.SphereGeometry(width * 0.5, segments * 2, segments);
+        const mesh = new THREE.Mesh(sphereGeo, surfaceMat);
+        mesh.userData = { isGuide: true, guideId: guide.id };
+        group.add(mesh);
+
+        const wireGeo = new THREE.WireframeGeometry(sphereGeo);
+        const wire = new THREE.LineSegments(wireGeo, gridLineMat);
+        group.add(wire);
+        break;
+      }
+      case 'tube': {
+        const cylGeo = new THREE.CylinderGeometry(width * 0.5, width * 0.5, height, segments, 4, true);
+        const mesh = new THREE.Mesh(cylGeo, surfaceMat);
+        mesh.userData = { isGuide: true, guideId: guide.id };
+        group.add(mesh);
+
+        const wireGeo = new THREE.WireframeGeometry(cylGeo);
+        const wire = new THREE.LineSegments(wireGeo, gridLineMat);
+        group.add(wire);
+        break;
+      }
+      case 'pyramid': {
+        const coneGeo = new THREE.ConeGeometry(width * 0.5, height, Math.max(3, segments));
+        const mesh = new THREE.Mesh(coneGeo, surfaceMat);
+        mesh.userData = { isGuide: true, guideId: guide.id };
+        group.add(mesh);
+
+        const edgesGeo = new THREE.EdgesGeometry(coneGeo);
+        const edges = new THREE.LineSegments(edgesGeo, borderLineMat);
+        group.add(edges);
+        break;
+      }
+      case 'plane':
+      default: {
+        // Main Raycastable Drawing Plane Surface
+        const planeGeo = new THREE.PlaneGeometry(width, height, segments, segments);
+        const mesh = new THREE.Mesh(planeGeo, surfaceMat);
+        mesh.userData = { isGuide: true, guideId: guide.id };
+        group.add(mesh);
+
+        // Internal Subdivisions Grid Lines
+        const gridPoints: THREE.Vector3[] = [];
+        const halfW = width * 0.5;
+        const halfH = height * 0.5;
+        const stepX = width / segments;
+        const stepY = height / segments;
+
+        for (let i = 1; i < segments; i++) {
+          const x = -halfW + i * stepX;
+          gridPoints.push(new THREE.Vector3(x, -halfH, 0.0005), new THREE.Vector3(x, halfH, 0.0005));
+        }
+        for (let j = 1; j < segments; j++) {
+          const y = -halfH + j * stepY;
+          gridPoints.push(new THREE.Vector3(-halfW, y, 0.0005), new THREE.Vector3(halfW, y, 0.0005));
+        }
+
+        if (gridPoints.length > 0) {
+          const gridGeo = new THREE.BufferGeometry().setFromPoints(gridPoints);
+          const gridLines = new THREE.LineSegments(gridGeo, gridLineMat);
+          group.add(gridLines);
+        }
+
+        // Outer Border Frame
+        const borderPoints = [
+          new THREE.Vector3(-halfW, -halfH, 0.001),
+          new THREE.Vector3(halfW, -halfH, 0.001),
+          new THREE.Vector3(halfW, halfH, 0.001),
+          new THREE.Vector3(-halfW, halfH, 0.001),
+          new THREE.Vector3(-halfW, -halfH, 0.001),
+        ];
+        const borderGeo = new THREE.BufferGeometry().setFromPoints(borderPoints);
+        const border = new THREE.Line(borderGeo, borderLineMat);
+        group.add(border);
+
+        // Center Origin Crosshairs on Plane
+        const crossLen = Math.min(width, height) * 0.15;
+        const crossXGeo = new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(-crossLen, 0, 0.002),
+          new THREE.Vector3(crossLen, 0, 0.002),
+        ]);
+        group.add(new THREE.Line(crossXGeo, axisXMat));
+
+        const crossYGeo = new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(0, -crossLen, 0.002),
+          new THREE.Vector3(0, crossLen, 0.002),
+        ]);
+        group.add(new THREE.Line(crossYGeo, axisYMat));
+
+        break;
+      }
+    }
+
+    if (guide.originPoint) {
+      group.position.set(guide.originPoint.x, guide.originPoint.y, guide.originPoint.z);
+    }
+    if (guide.rotation) {
+      group.rotation.set(guide.rotation.x, guide.rotation.y, guide.rotation.z);
+    }
+
+    group.visible = guide.active !== false;
+    return group;
   }
 }
 

@@ -3,7 +3,6 @@ import { EnvironmentConfig } from '../types';
 
 interface TopLeftSystemMenuProps {
   onOpenHome: () => void;
-  onOpenModelLibrary?: () => void;
   onCaptureThumbnail: () => void;
   onToggleHideUI: () => void;
   isDarkMode: boolean;
@@ -26,7 +25,6 @@ interface TopLeftSystemMenuProps {
 
 export const TopLeftSystemMenu: React.FC<TopLeftSystemMenuProps> = ({
   onOpenHome,
-  onOpenModelLibrary,
   onCaptureThumbnail,
   onToggleHideUI,
   isDarkMode,
@@ -99,21 +97,6 @@ export const TopLeftSystemMenu: React.FC<TopLeftSystemMenuProps> = ({
             {/* Tab Contents */}
             {activeTab === 'file' && (
               <div className="space-y-1">
-                {onOpenModelLibrary && (
-                  <button
-                    onClick={() => {
-                      onOpenModelLibrary();
-                      setIsOpen(false);
-                    }}
-                    className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl hover:bg-zinc-100 dark:hover:bg-zinc-800 text-left text-sm font-medium text-zinc-800 dark:text-zinc-100 feather-btn"
-                  >
-                    <div>
-                      <div className="text-sm font-medium">3D Model Library</div>
-                      <div className="text-[10px] text-zinc-400 font-normal">Load preset or import GLB/OBJ</div>
-                    </div>
-                    <span className="text-[10px] font-bold text-purple-500 uppercase">3D</span>
-                  </button>
-                )}
 
                 {onOpenSnapshots && (
                   <button

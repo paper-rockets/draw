@@ -62,16 +62,15 @@ export const ExportModal: React.FC<ExportModalProps> = ({
       if (exportFormat === 'glb' || exportFormat === 'gltf') {
         const options: GLTFExportOptions = {
           binary: exportFormat === 'glb',
-          includeCustomAttributes: includeVertexColors,
+          includeVertexColors,
           includeMaterials,
           includeHierarchy,
           includeTextures,
           includeCameras,
-          onlyVisible: onlyVisibleLayers,
+          onlyVisibleGroups: onlyVisibleLayers,
         };
 
-        const blob = await ExportEngine.exportGLTF(currentProject, options);
-        ExportEngine.downloadFile(blob, `${filename}.${exportFormat}`);
+        await ExportEngine.exportToGLTF(currentProject, currentProject.groups, options, filename);
         setExportSuccessMessage(`Exported ${filename}.${exportFormat} successfully`);
       } else if (exportFormat === 'obj') {
         if (onExportOBJ) {

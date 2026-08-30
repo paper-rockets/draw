@@ -28,7 +28,6 @@ import { RenderEngine } from './engine/RenderEngine';
 import { StrokeSmoother } from './engine/StrokeSmoother';
 import { WanderlustSkyDome } from './engine/WanderlustSkyShader';
 import { defaultProjects } from './data/sampleProjects';
-import { SampleModelFactory } from './data/sampleModels';
 import { StorageEngine } from './utils/storage';
 import { TopLeftSystemMenu } from './components/TopLeftSystemMenu';
 import { TopRightToolMenu } from './components/TopRightToolMenu';
@@ -39,12 +38,27 @@ import { TransformJoystick, OrthoDepthAxis } from './components/TransformJoystic
 import { ClipboardOverlay } from './components/ClipboardOverlay';
 import { RadialSqueezeMenu } from './components/RadialSqueezeMenu';
 import { HomeGalleryModal } from './components/HomeGalleryModal';
-import { ModelLibraryModal } from './components/ModelLibraryModal';
 import { PublishToGalleryModal } from './components/PublishToGalleryModal';
 import { ARSequenceModal } from './components/ARSequenceModal';
 import { ExportModal } from './components/ExportModal';
 import { MobileBottomBar } from './components/MobileBottomBar';
 import { SingleHandDualNav } from './components/SingleHandDualNav';
+
+const defaultDrawingPlane: Guide3D = {
+  id: 'default-drawing-plane',
+  name: 'Drawing Plane',
+  type: 'plane',
+  originPoint: { x: 0, y: 0, z: 0, pressure: 1 },
+  normal: { x: 0, y: 1, z: 0 },
+  rotation: { x: -Math.PI / 2, y: 0, z: 0 },
+  width: 4.0,
+  height: 4.0,
+  depth: 4.0,
+  segments: 16,
+  tension: 0.5,
+  opacity: 0.85,
+  active: true,
+};
 
 export default function App() {
   // Global Project and State
@@ -83,16 +97,11 @@ export default function App() {
   const [silhouetteClamping, setSilhouetteClamping] = useState<boolean>(true);
   const [surfaceOffset, setSurfaceOffset] = useState<number>(0.003);
 
-  // 3D Model Library State
-  const [isModelLibraryOpen, setIsModelLibraryOpen] = useState<boolean>(false);
-  const [activeModelName, setActiveModelName] = useState<string>('Cyber Helmet');
-  const [hasActiveModel, setHasActiveModel] = useState<boolean>(true);
-
   // Assisted Modifiers and Symmetry
   const [stableStrokeAmount, setStableStrokeAmount] = useState<number>(0.5);
   const [activeMirrorAxis, setActiveMirrorAxis] = useState<{ x: boolean; y: boolean; z: boolean }>({ x: false, y: false, z: false });
   const [radialSymmetry, setRadialSymmetry] = useState<{ count: number; axis: 'x' | 'y' | 'z' }>({ count: 0, axis: 'y' });
-  const [activeGuide, setActiveGuide] = useState<Guide3D | null>(null);
+  const [activeGuide, setActiveGuide] = useState<Guide3D | null>(defaultDrawingPlane);
   const [isBendingGuide, setIsBendingGuide] = useState<boolean>(false);
   const [loftTension, setLoftTension] = useState<number>(0.5);
 
@@ -164,7 +173,8 @@ export default function App() {
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const skyDomeRef = useRef<WanderlustSkyDome | null>(null);
   const strokeMeshesMap = useRef<Map<string, THREE.Mesh>>(new Map());
-  const guideMeshRef = useRef<THREE.Mesh | null>(null);
+  const guideMeshRef = useRef<THREE.Group | THREE.Mesh | null>(null);
+  const livePreviewMeshRef = useRef<THREE.Mesh | null>(null);
   const orbitGizmoRef = useRef<THREE.Group | null>(null);
   const gridHelperRef = useRef<THREE.GridHelper | null>(null);
   const axesGroupRef = useRef<THREE.Group | null>(null);
@@ -365,7 +375,7 @@ export default function App() {
     if ('vibrate' in navigator) navigator.vibrate(25);
   }, [updateCameraPosition]);
 
-  // 3D Model Management
+  // 3D Custom Reference Model Management
   const setModelObject = useCallback((obj: THREE.Object3D, name: string) => {
     if (!modelRootRef.current) return;
 
@@ -415,17 +425,8 @@ export default function App() {
     obj.position.sub(scaledCenter);
     obj.updateMatrixWorld(true);
 
-    setActiveModelName(name);
-    setHasActiveModel(true);
-    showToast(`Loaded 3D Model: ${name}`);
+    showToast(`Loaded Reference: ${name}`);
   }, []);
-
-  const loadPresetModel = useCallback((presetId: string) => {
-    const presets = SampleModelFactory.getPresets();
-    const found = presets.find((p) => p.id === presetId) || presets[0];
-    const meshObj = found.createMesh();
-    setModelObject(meshObj, found.name);
-  }, [setModelObject]);
 
   const clearModel = useCallback(() => {
     if (!modelRootRef.current) return;
@@ -441,11 +442,10 @@ export default function App() {
       });
     }
     targetMeshesRef.current = [];
-    setHasActiveModel(false);
     if (cursorDecalRef.current) {
       cursorDecalRef.current.visible = false;
     }
-    showToast('Unloaded 3D Model');
+    showToast('Cleared Reference Model');
   }, []);
 
   const handleImportCustomModel = useCallback(async (file: File) => {
@@ -484,7 +484,30 @@ export default function App() {
     }
   }, [setModelObject]);
 
-  // Raycast from NDC (-1 to 1) onto front-facing 3D meshes or guides
+  // Synchronize 3D Guide Object (Drawing Plane or Primitives) with Three.js Scene
+  useEffect(() => {
+    if (!sceneRef.current) return;
+
+    if (guideMeshRef.current) {
+      sceneRef.current.remove(guideMeshRef.current);
+      guideMeshRef.current.traverse((child: any) => {
+        if (child.geometry) child.geometry.dispose();
+        if (child.material) {
+          if (Array.isArray(child.material)) child.material.forEach((m: any) => m.dispose());
+          else child.material.dispose();
+        }
+      });
+      guideMeshRef.current = null;
+    }
+
+    if (activeGuide && activeGuide.active !== false) {
+      const guideObj = RenderEngine.createGuideObject(activeGuide);
+      sceneRef.current.add(guideObj);
+      guideMeshRef.current = guideObj as any;
+    }
+  }, [activeGuide, isSceneReady]);
+
+  // Raycast from NDC (-1 to 1) onto active guide / drawing plane or imported meshes
   const raycastModel = useCallback((screenX: number, screenY: number): {
     hit: boolean;
     point: THREE.Vector3;
@@ -502,34 +525,27 @@ export default function App() {
 
     let hit: THREE.Intersection | null = null;
 
-    // Fast-path: Prioritize checking the previously hit mesh
-    if (lastHitMeshRef.current && lastHitMeshRef.current.visible) {
-      const directHit = raycaster.intersectObject(lastHitMeshRef.current, false);
-      if (directHit.length > 0) {
-        hit = directHit[0];
+    // 1. Prioritize active Drawing Plane / 3D Guide
+    if (activeGuide && activeGuide.active !== false && guideMeshRef.current) {
+      const guideHits = raycaster.intersectObject(guideMeshRef.current, true);
+      if (guideHits.length > 0) {
+        hit = guideHits[0];
       }
     }
 
+    // 2. Check imported reference meshes
     if (!hit && targetMeshesRef.current.length > 0) {
-      const intersects = raycaster.intersectObjects(targetMeshesRef.current, false);
+      const intersects = raycaster.intersectObjects(targetMeshesRef.current, true);
       if (intersects.length > 0) {
         hit = intersects[0];
         lastHitMeshRef.current = hit.object as THREE.Mesh;
       }
     }
 
-    // Check active guide mesh
-    if (!hit && activeGuide && guideMeshRef.current) {
-      const guideHits = raycaster.intersectObject(guideMeshRef.current, false);
-      if (guideHits.length > 0) {
-        hit = guideHits[0];
-      }
-    }
-
     if (hit) {
       let worldNormal = hit.face
         ? hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize()
-        : new THREE.Vector3(0, 1, 0);
+        : (activeGuide ? new THREE.Vector3(activeGuide.normal.x, activeGuide.normal.y, activeGuide.normal.z) : new THREE.Vector3(0, 1, 0));
 
       const camDir = new THREE.Vector3().subVectors(cameraRef.current.position, hit.point).normalize();
       if (worldNormal.dot(camDir) < 0) {
@@ -537,8 +553,8 @@ export default function App() {
       }
 
       const worldPoint = hit.point.clone();
-      let localPoint = worldPoint.clone();
-      let localNormal = worldNormal.clone();
+      const localPoint = worldPoint.clone();
+      const localNormal = worldNormal.clone();
 
       if (modelRootRef.current) {
         const invModelMatrix = modelRootRef.current.matrixWorld.clone().invert();
@@ -671,8 +687,10 @@ export default function App() {
   const handlePointerDown = (e: React.PointerEvent) => {
     const isPen = e.pointerType === 'pen';
     const isTouch = e.pointerType === 'touch';
+    const isMouse = e.pointerType === 'mouse' || !e.pointerType;
 
-    if (e.buttons === 2 || e.button === 2) {
+    // Stylus Barrel button (Button 2 / Right click on stylus) opens Radial Squeeze Menu
+    if (isPen && (e.buttons === 2 || e.button === 2)) {
       e.preventDefault();
       const twist = (e as any).twist || 0;
       setRadialMenu({ isOpen: true, x: e.clientX, y: e.clientY, twistAngle: twist });
@@ -680,28 +698,25 @@ export default function App() {
       return;
     }
 
-    if (isPen) {
-      activeStylusPosRef.current = { x: e.clientX, y: e.clientY, time: Date.now() };
-
-      if (palmRejectionEnabled) {
-        activeTouchPointersRef.current.forEach((pos, id) => {
-          const dist = Math.hypot(pos.x - e.clientX, pos.y - e.clientY);
-          if (dist <= palmRejectionRadius) {
-            rejectedTouchPointersRef.current.add(id);
-            activeTouchPointersRef.current.delete(id);
-            setPalmRejectionFeedback({ x: pos.x, y: pos.y, timestamp: Date.now() });
-          }
-        });
-      }
+    // Right-click or Middle-click mouse drag -> Camera Orbit / Pan (not drawing)
+    if (isMouse && (e.button === 1 || e.button === 2 || e.buttons === 2 || e.buttons === 4)) {
+      e.preventDefault();
+      isDrawingRef.current = false;
+      return;
     }
 
+    // Pen tracking for palm rejection
+    if (isPen) {
+      activeStylusPosRef.current = { x: e.clientX, y: e.clientY, time: Date.now() };
+    }
+
+    // Palm rejection: ONLY active if enabled AND stylus is actively down
     if (isTouch && palmRejectionEnabled && activeStylusPosRef.current) {
       const timeSinceStylus = Date.now() - activeStylusPosRef.current.time;
-      if (isDrawingRef.current || timeSinceStylus < 1500) {
+      if (isDrawingRef.current && timeSinceStylus < 1000) {
         const dist = Math.hypot(e.clientX - activeStylusPosRef.current.x, e.clientY - activeStylusPosRef.current.y);
         if (dist <= palmRejectionRadius) {
           rejectedTouchPointersRef.current.add(e.pointerId);
-          setPalmRejectionFeedback({ x: e.clientX, y: e.clientY, timestamp: Date.now() });
           return;
         }
       }
@@ -719,30 +734,114 @@ export default function App() {
         };
       } else {
         multiTouchTapRef.current.maxTouches = Math.max(multiTouchTapRef.current.maxTouches, currentTouches);
+        isDrawingRef.current = false;
+        currentPointsRef.current = [];
+        if (livePreviewMeshRef.current && sceneRef.current) {
+          sceneRef.current.remove(livePreviewMeshRef.current);
+          if (livePreviewMeshRef.current.geometry) livePreviewMeshRef.current.geometry.dispose();
+          livePreviewMeshRef.current = null;
+        }
+        return;
       }
     }
 
-    const canDraw = isPen || (isFingerPenMode && currentTouches === 1);
+    const canDraw = isMouse ? (e.button === 0) : (isPen || currentTouches === 1);
 
-    if (canDraw) {
+    if (canDraw && !isSpacebarHeldRef.current && !isDHeldRef.current && !isFHeldRef.current) {
       touchStartTimeRef.current = Date.now();
 
-      touchHoldTimerRef.current = setTimeout(() => {
-        if (!isDrawingRef.current && activeTouchPointersRef.current.size === 1) {
-          const worldPt = getPointerWorldCoordinate(e.clientX, e.clientY);
-          if (worldPt && cameraRef.current) {
-            setEnvironment((prev) => ({
-              ...prev,
-              orbitPoint: [worldPt.x ?? 0, worldPt.y ?? 0, worldPt.z ?? 0],
-              orbitPointPinned: true,
-              dofEnabled: true,
-              dofFStop: 2.8,
-            }));
-            showToast('Anchor Pinned: Orbit Center Locked');
-            if ('vibrate' in navigator) navigator.vibrate([25, 20, 25]);
+      // Eyedropper / Color picking tool
+      if (isEyedropperActive || toolMode === 'eyedropper') {
+        if (cameraRef.current && canvasContainerRef.current) {
+          const rect = canvasContainerRef.current.getBoundingClientRect();
+          const raycaster = new THREE.Raycaster();
+          raycaster.setFromCamera(
+            new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1),
+            cameraRef.current
+          );
+          for (const s of currentProject.strokes) {
+            if (GeometryEngine.doesRayIntersectCenterline(raycaster.ray, s.points, 0.15)) {
+              setColor(s.color);
+              setBrushSize(s.size);
+              setOpacity(s.opacity);
+              setMaterial(s.material);
+              setPattern(s.pattern);
+              showToast(`Sampled: ${s.color}`);
+              setIsEyedropperActive(false);
+              return;
+            }
           }
         }
-      }, 420);
+      }
+
+      // Injector / Attribute applying tool
+      if (isInjectorActive || toolMode === 'injector') {
+        if (cameraRef.current && canvasContainerRef.current) {
+          const rect = canvasContainerRef.current.getBoundingClientRect();
+          const raycaster = new THREE.Raycaster();
+          raycaster.setFromCamera(
+            new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1),
+            cameraRef.current
+          );
+          const updated = currentProject.strokes.map((s) => {
+            if (GeometryEngine.doesRayIntersectCenterline(raycaster.ray, s.points, 0.18)) {
+              return {
+                ...s,
+                color,
+                size: brushSize,
+                opacity,
+                material,
+                pattern,
+                patternScale,
+                patternAngle,
+                patternContrast,
+              };
+            }
+            return s;
+          });
+          pushHistory(updated);
+          showToast('Injected Brush Attributes');
+          return;
+        }
+      }
+
+      // Select / Deselect tool
+      if (toolMode === 'select' || toolMode === 'deselect') {
+        if (cameraRef.current && canvasContainerRef.current) {
+          const rect = canvasContainerRef.current.getBoundingClientRect();
+          const raycaster = new THREE.Raycaster();
+          raycaster.setFromCamera(
+            new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1),
+            cameraRef.current
+          );
+          const nextSelected = new Set(selectedStrokeIds);
+          let modified = false;
+          for (const s of currentProject.strokes) {
+            if (GeometryEngine.doesRayIntersectCenterline(raycaster.ray, s.points, 0.15)) {
+              if (toolMode === 'select') {
+                if (e.shiftKey) {
+                  if (nextSelected.has(s.id)) nextSelected.delete(s.id);
+                  else nextSelected.add(s.id);
+                } else {
+                  nextSelected.clear();
+                  nextSelected.add(s.id);
+                }
+              } else {
+                nextSelected.delete(s.id);
+              }
+              modified = true;
+              break;
+            }
+          }
+          if (modified) {
+            setSelectedStrokeIds(nextSelected);
+            showToast(`${nextSelected.size} Curve(s) Selected`);
+            return;
+          } else if (!e.shiftKey && toolMode === 'select') {
+            setSelectedStrokeIds(new Set());
+          }
+        }
+      }
 
       // Start Stroke
       isDrawingRef.current = true;
@@ -753,7 +852,7 @@ export default function App() {
         const rect = canvasContainerRef.current.getBoundingClientRect();
         const rawNdcX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
         const rawNdcY = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-        const rawPress = isPen && pressureSensitive ? (e.pressure || 0.6) : 0.8;
+        const rawPress = isPen && pressureSensitive ? (e.pressure || 0.6) : (pressureSensitive ? 0.8 : 1.0);
 
         const smoothed = strokeSmootherRef.current.processPoint(
           rawNdcX,
@@ -787,7 +886,6 @@ export default function App() {
           currentPointsRef.current = [firstPoint];
           lastCapturePointRef.current = firstPoint;
         } else {
-          isOverAirRef.current = true;
           const fallbackPt = getPointerWorldCoordinate(e.clientX, e.clientY);
           const firstPoint: Point3D = {
             x: fallbackPt.x,
@@ -808,7 +906,7 @@ export default function App() {
     }
   };
 
-  // Handle Pointer Move with High-Frequency Raycast Sub-Sampling
+  // Handle Pointer Move with High-Frequency Spatial Sketching
   const handlePointerMove = (e: React.PointerEvent) => {
     if (rejectedTouchPointersRef.current.has(e.pointerId)) {
       return;
@@ -816,42 +914,20 @@ export default function App() {
 
     const isPen = e.pointerType === 'pen';
     const isTouch = e.pointerType === 'touch';
+    const isMouse = e.pointerType === 'mouse' || !e.pointerType;
 
     if (isPen) {
       activeStylusPosRef.current = { x: e.clientX, y: e.clientY, time: Date.now() };
-
-      if (palmRejectionEnabled) {
-        activeTouchPointersRef.current.forEach((pos, id) => {
-          const dist = Math.hypot(pos.x - e.clientX, pos.y - e.clientY);
-          if (dist <= palmRejectionRadius) {
-            rejectedTouchPointersRef.current.add(id);
-            activeTouchPointersRef.current.delete(id);
-            setPalmRejectionFeedback({ x: pos.x, y: pos.y, timestamp: Date.now() });
-          }
-        });
-      }
     }
 
     if (isTouch) {
-      if (palmRejectionEnabled && activeStylusPosRef.current) {
-        const timeSinceStylus = Date.now() - activeStylusPosRef.current.time;
-        if (isDrawingRef.current || timeSinceStylus < 1500) {
-          const dist = Math.hypot(e.clientX - activeStylusPosRef.current.x, e.clientY - activeStylusPosRef.current.y);
-          if (dist <= palmRejectionRadius) {
-            rejectedTouchPointersRef.current.add(e.pointerId);
-            activeTouchPointersRef.current.delete(e.pointerId);
-            setPalmRejectionFeedback({ x: e.clientX, y: e.clientY, timestamp: Date.now() });
-            return;
-          }
-        }
-      }
       activeTouchPointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     }
 
-    // Keyboard navigation overrides
-    if (isSpacebarHeldRef.current) {
+    // Keyboard navigation overrides (Spacebar / Right drag / Middle drag = Orbit)
+    if (isSpacebarHeldRef.current || (isMouse && (e.buttons === 4 || e.buttons === 2))) {
       cameraSphericalRef.current.theta -= e.movementX * 0.008;
-      cameraSphericalRef.current.phi = Math.max(0.1, Math.min(Math.PI - 0.1, cameraSphericalRef.current.phi - e.movementY * 0.008));
+      cameraSphericalRef.current.phi = Math.max(0.05, Math.min(Math.PI - 0.05, cameraSphericalRef.current.phi - e.movementY * 0.008));
       updateCameraPosition();
       return;
     }
@@ -875,20 +951,8 @@ export default function App() {
       multiTouchTapRef.current.moved = true;
     }
 
-    // 1-Finger Orbit
-    if (numTouches === 1 && !isPen && !isFingerPenMode && !isDrawingRef.current) {
-      clearTimeout(touchHoldTimerRef.current);
-      const deltaX = e.movementX * 0.008;
-      const deltaY = e.movementY * 0.008;
-      cameraSphericalRef.current.theta -= deltaX;
-      cameraSphericalRef.current.phi = Math.max(0.1, Math.min(Math.PI - 0.1, cameraSphericalRef.current.phi - deltaY));
-      updateCameraPosition();
-      return;
-    }
-
     // 2-Finger Pinch Zoom and Pan
     if (numTouches === 2) {
-      clearTimeout(touchHoldTimerRef.current);
       isDrawingRef.current = false;
       const pointers = Array.from(activeTouchPointersRef.current.values()) as { x: number; y: number }[];
       if (pointers.length >= 2 && pointers[0] && pointers[1]) {
@@ -913,38 +977,22 @@ export default function App() {
       return;
     }
 
-    // 3-Finger Vertical Swipe (FOV Distortion)
-    if (numTouches === 3 && cameraRef.current) {
-      clearTimeout(touchHoldTimerRef.current);
-      const fovDelta = e.movementY * 0.25;
-      const nextFov = Math.max(6, Math.min(105, cameraRef.current.fov + fovDelta));
-      cameraRef.current.fov = nextFov;
-      cameraRef.current.updateProjectionMatrix();
-
-      const focalMm = Math.round(500 / ((nextFov / 40) * 10));
-      setFovBadge({ visible: true, fov: nextFov, mm: focalMm });
-      clearTimeout(fovBadgeTimerRef.current);
-      fovBadgeTimerRef.current = setTimeout(() => {
-        setFovBadge((prev) => ({ ...prev, visible: false }));
-      }, 1500);
+    // 1-Finger Orbit when NOT drawing
+    if (numTouches === 1 && !isPen && !isDrawingRef.current && isTouch && !isFingerPenMode) {
+      const deltaX = e.movementX * 0.008;
+      const deltaY = e.movementY * 0.008;
+      cameraSphericalRef.current.theta -= deltaX;
+      cameraSphericalRef.current.phi = Math.max(0.05, Math.min(Math.PI - 0.05, cameraSphericalRef.current.phi - deltaY));
+      updateCameraPosition();
       return;
     }
 
-    // NDC Coordinates
-    if (!canvasContainerRef.current) return;
-    const rect = canvasContainerRef.current.getBoundingClientRect();
-    const rawNdcX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-    const rawNdcY = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-    const rawPress = isPen && pressureSensitive ? (e.pressure || 0.6) : 0.8;
-
-    // Update 3D cursor decal projection when hovering over model
-    if (!isDrawingRef.current && hasActiveModel) {
-      updateCursorDecal(rawNdcX, rawNdcY, brushSize);
-    }
-
     // Active Drawing Process
-    if (isDrawingRef.current) {
-      clearTimeout(touchHoldTimerRef.current);
+    if (isDrawingRef.current && canvasContainerRef.current) {
+      const rect = canvasContainerRef.current.getBoundingClientRect();
+      const rawNdcX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      const rawNdcY = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+      const rawPress = isPen && pressureSensitive ? (e.pressure || 0.6) : (pressureSensitive ? 0.8 : 1.0);
 
       const smoothed = strokeSmootherRef.current.processPoint(
         rawNdcX,
@@ -968,9 +1016,8 @@ export default function App() {
       const dy = targetY - lastScreenCoordsRef.current.y;
       const screenDist = Math.hypot(dx, dy);
 
-      // Sub-sample screen movements so rapid strokes capture all surface contours
-      const maxStepDist = 0.005;
-      const steps = Math.min(24, Math.max(1, Math.ceil(screenDist / maxStepDist)));
+      const maxStepDist = 0.006;
+      const steps = Math.min(16, Math.max(1, Math.ceil(screenDist / maxStepDist)));
 
       for (let step = 1; step <= steps; step++) {
         const alpha = step / steps;
@@ -979,70 +1026,44 @@ export default function App() {
         const currPressure = targetPressure;
 
         const rayResult = raycastModel(currX, currY);
+        let newPoint: Point3D;
 
-        if (!rayResult || !rayResult.hit) {
-          // Ray missed into empty air
-          if (currentPointsRef.current.length > 1) {
-            commitActiveSegment();
-          }
-          isOverAirRef.current = true;
-          lastCapturePointRef.current = null;
-          continue;
+        if (rayResult && rayResult.hit) {
+          newPoint = {
+            x: rayResult.worldPoint.x,
+            y: rayResult.worldPoint.y,
+            z: rayResult.worldPoint.z,
+            normal: { x: rayResult.worldNormal.x, y: rayResult.worldNormal.y, z: rayResult.worldNormal.z },
+            pressure: currPressure,
+            isSurfaceHit: true,
+            uv: rayResult.uv,
+            tiltX: e.tiltX,
+            tiltY: e.tiltY,
+            timestamp: Date.now(),
+          };
+        } else {
+          const clientX = ((currX + 1) * 0.5) * rect.width + rect.left;
+          const clientY = ((-currY + 1) * 0.5) * rect.height + rect.top;
+          const pt3D = getPointerWorldCoordinate(clientX, clientY);
+          newPoint = {
+            x: pt3D.x,
+            y: pt3D.y,
+            z: pt3D.z,
+            pressure: currPressure,
+            isSurfaceHit: false,
+            tiltX: e.tiltX,
+            tiltY: e.tiltY,
+            timestamp: Date.now(),
+          };
         }
-
-        // Surface Hit Point
-        const newPoint: Point3D = {
-          x: rayResult.worldPoint.x,
-          y: rayResult.worldPoint.y,
-          z: rayResult.worldPoint.z,
-          normal: { x: rayResult.worldNormal.x, y: rayResult.worldNormal.y, z: rayResult.worldNormal.z },
-          pressure: currPressure,
-          isSurfaceHit: true,
-          uv: rayResult.uv,
-          tiltX: e.tiltX,
-          tiltY: e.tiltY,
-          timestamp: Date.now(),
-        };
-
-        // Discontinuity detection: Returning from air, large 3D jump, or sharp normal flip (>105 deg)
-        if (lastCapturePointRef.current) {
-          const dist3D = Math.hypot(
-            newPoint.x - lastCapturePointRef.current.x,
-            newPoint.y - lastCapturePointRef.current.y,
-            newPoint.z - lastCapturePointRef.current.z
-          );
-
-          let normalDot = 1.0;
-          if (lastCapturePointRef.current.normal && newPoint.normal) {
-            const nA = lastCapturePointRef.current.normal;
-            const nB = newPoint.normal;
-            normalDot = nA.x * nB.x + nA.y * nB.y + nA.z * nB.z;
-          }
-
-          const maxJump = Math.max(0.18, (brushSize / 1000) * 6.0);
-          const isDiscontinuous = isOverAirRef.current || dist3D > maxJump || normalDot < -0.25;
-
-          if (isDiscontinuous) {
-            if (currentPointsRef.current.length > 1) {
-              commitActiveSegment();
-            }
-            isOverAirRef.current = false;
-            lastCapturePointRef.current = null;
-          }
-        }
-
-        isOverAirRef.current = false;
 
         if (currentPointsRef.current.length === 0) {
           currentPointsRef.current.push(newPoint);
           lastCapturePointRef.current = newPoint;
         } else {
-          const distFromLast = Math.hypot(
-            newPoint.x - lastCapturePointRef.current!.x,
-            newPoint.y - lastCapturePointRef.current!.y,
-            newPoint.z - lastCapturePointRef.current!.z
-          );
-          if (distFromLast > 0.0004) {
+          const last = lastCapturePointRef.current || currentPointsRef.current[currentPointsRef.current.length - 1];
+          const distFromLast = Math.hypot(newPoint.x - last.x, newPoint.y - last.y, newPoint.z - last.z);
+          if (distFromLast > 0.001) {
             currentPointsRef.current.push(newPoint);
             lastCapturePointRef.current = newPoint;
           }
@@ -1051,6 +1072,59 @@ export default function App() {
 
       lastScreenCoordsRef.current = { x: targetX, y: targetY };
       updateCursorDecal(targetX, targetY, brushSize);
+
+      // Live Stroke Preview in Three.js Scene
+      if (currentPointsRef.current.length >= 2 && sceneRef.current) {
+        const previewStroke: Stroke = {
+          id: 'live-preview-stroke',
+          groupId: activeGroupId,
+          points: currentPointsRef.current,
+          color,
+          size: brushSize,
+          opacity,
+          jitter,
+          brushType,
+          profile: strokeProfile,
+          material,
+          pattern,
+          patternScale,
+          patternAngle,
+          patternContrast,
+          pressureSensitive,
+          isShape: toolMode === 'draw_shape',
+          archSegments: 5,
+          domeFactor,
+          surfaceOffset,
+          taperLength: 0.05,
+          silhouetteClamping,
+          smoothingAlgorithm,
+          smoothingStrength,
+          createdAt: Date.now(),
+        };
+
+        const previewGeo = GeometryEngine.createStrokeMesh(previewStroke, targetMeshesRef.current);
+        if (!livePreviewMeshRef.current) {
+          const previewMat = RenderEngine.createMaterial(
+            material,
+            color,
+            opacity,
+            pattern,
+            patternScale,
+            patternAngle,
+            patternContrast,
+            environment
+          );
+          const mesh = new THREE.Mesh(previewGeo, previewMat);
+          mesh.renderOrder = 10;
+          sceneRef.current.add(mesh);
+          livePreviewMeshRef.current = mesh;
+        } else {
+          if (livePreviewMeshRef.current.geometry) {
+            livePreviewMeshRef.current.geometry.dispose();
+          }
+          livePreviewMeshRef.current.geometry = previewGeo;
+        }
+      }
 
       // Vacuum / Erase interaction
       if (toolMode === 'erase' || toolMode === 'vacuum') {
@@ -1078,6 +1152,7 @@ export default function App() {
   const handlePointerUp = (e: React.PointerEvent) => {
     if (rejectedTouchPointersRef.current.has(e.pointerId)) {
       rejectedTouchPointersRef.current.delete(e.pointerId);
+      activeTouchPointersRef.current.delete(e.pointerId);
       return;
     }
 
@@ -1089,6 +1164,13 @@ export default function App() {
     activeTouchPointersRef.current.delete(e.pointerId);
     pinchStartDistRef.current = null;
     clearTimeout(touchHoldTimerRef.current);
+
+    // Remove Live Preview Mesh from Scene
+    if (livePreviewMeshRef.current && sceneRef.current) {
+      sceneRef.current.remove(livePreviewMeshRef.current);
+      if (livePreviewMeshRef.current.geometry) livePreviewMeshRef.current.geometry.dispose();
+      livePreviewMeshRef.current = null;
+    }
 
     // Multi-Touch Tap Gesture Engine
     const elapsed = Date.now() - multiTouchTapRef.current.startTime;
@@ -1622,9 +1704,6 @@ export default function App() {
     scene.add(skyDome.mesh);
     skyDomeRef.current = skyDome;
 
-    // Load initial default 3D preset model
-    loadPresetModel('cyber_helmet');
-
     // Animation Loop
     let animId: number;
     const animate = () => {
@@ -1772,23 +1851,6 @@ export default function App() {
         className="absolute inset-0 w-full h-full cursor-crosshair touch-none"
       />
 
-      {/* Palm Rejection Feedback */}
-      {palmRejectionEnabled && palmRejectionFeedback && Date.now() - palmRejectionFeedback.timestamp < 1200 && (
-        <div
-          style={{
-            left: `${palmRejectionFeedback.x}px`,
-            top: `${palmRejectionFeedback.y}px`,
-            width: `${palmRejectionRadius * 2}px`,
-            height: `${palmRejectionRadius * 2}px`,
-          }}
-          className="fixed pointer-events-none -translate-x-1/2 -translate-y-1/2 z-40 rounded-full border border-blue-500/30 bg-blue-500/5 animate-ping flex items-center justify-center"
-        >
-          <span className="text-[10px] font-mono font-bold tracking-wider text-blue-400 bg-zinc-950/80 px-2 py-0.5 rounded-full border border-blue-500/30 shadow-lg">
-            Palm Touch Discarded
-          </span>
-        </div>
-      )}
-
       {/* FOV Badge */}
       {fovBadge.visible && (
         <div className="fixed top-20 right-6 z-50 pointer-events-none flex items-center gap-2 px-3.5 py-1.5 rounded-full feather-panel shadow-2xl border border-blue-500/40 text-xs font-mono font-bold text-blue-500 dark:text-blue-400 bg-black/80 backdrop-blur-md animate-in fade-in zoom-in-90 duration-150">
@@ -1837,7 +1899,6 @@ export default function App() {
             projectTitle={currentProject.title}
             isAutosaved={isAutosaved}
             onOpenHome={() => setIsHomeGalleryOpen(true)}
-            onOpenModelLibrary={() => setIsModelLibraryOpen(true)}
             onCaptureThumbnail={handleCaptureThumbnail}
             onToggleHideUI={() => setHideUI(true)}
             isDarkMode={isDarkMode}
@@ -1964,11 +2025,43 @@ export default function App() {
           {/* Desktop Mode Indicators */}
           <div className="hidden md:flex fixed top-4 left-1/2 -translate-x-1/2 z-30 pointer-events-auto items-center gap-2">
             <button
-              onClick={() => setIsModelLibraryOpen(true)}
-              title="Open 3D Model Library"
-              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full feather-panel text-xs font-bold shadow-md border border-purple-500/40 text-purple-600 dark:text-purple-400 active:scale-95 feather-btn"
+              onClick={() => {
+                if (!activeGuide) {
+                  setActiveGuide(defaultDrawingPlane);
+                  showToast('Drawing Plane Active (Ground XZ)');
+                } else {
+                  const rotX = activeGuide.rotation?.x ?? 0;
+                  const rotY = activeGuide.rotation?.y ?? 0;
+                  if (Math.abs(rotX - (-Math.PI / 2)) < 0.1) {
+                    setActiveGuide({ ...activeGuide, rotation: { x: 0, y: 0, z: 0 }, normal: { x: 0, y: 0, z: 1 } });
+                    showToast('Drawing Plane: Wall (XY)');
+                  } else if (Math.abs(rotX) < 0.1 && Math.abs(rotY) < 0.1) {
+                    setActiveGuide({ ...activeGuide, rotation: { x: 0, y: Math.PI / 2, z: 0 }, normal: { x: 1, y: 0, z: 0 } });
+                    showToast('Drawing Plane: Side (YZ)');
+                  } else {
+                    setActiveGuide(null);
+                    showToast('Drawing Plane Off (Free Space)');
+                  }
+                }
+              }}
+              title="Click to cycle Drawing Plane orientation: Ground (XZ) -> Wall (XY) -> Side (YZ) -> Off"
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-bold shadow-md active:scale-95 feather-btn ${
+                activeGuide
+                  ? 'bg-blue-600 text-white border border-blue-500'
+                  : 'feather-panel text-zinc-700 dark:text-zinc-300 border border-zinc-200/80 dark:border-zinc-700/80'
+              }`}
             >
-              <span>3D Model: {hasActiveModel ? activeModelName : 'None'}</span>
+              <span>
+                {activeGuide
+                  ? `Plane: ${
+                      Math.abs((activeGuide.rotation?.x ?? 0) - (-Math.PI / 2)) < 0.1
+                        ? 'Ground (XZ)'
+                        : Math.abs(activeGuide.rotation?.y ?? 0) > 0.1
+                        ? 'Side (YZ)'
+                        : 'Wall (XY)'
+                    }`
+                  : 'Plane: Off'}
+              </span>
             </button>
 
             <button
@@ -1977,7 +2070,7 @@ export default function App() {
                 showToast(!isFingerPenMode ? 'Finger-Pen Drawing Active' : 'Touch Orbit Active');
               }}
               title="Toggle Finger-Pen Mode"
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full feather-panel text-xs font-bold shadow-md border border-zinc-200/80 dark:border-zinc-700/80 active:scale-95 feather-btn"
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full feather-panel text-xs font-bold shadow-md border border-zinc-200/80 dark:border-zinc-700/80 active:scale-95 feather-btn"
             >
               <span className="text-zinc-800 dark:text-zinc-200">
                 {isFingerPenMode ? 'Finger-Pen: ON' : 'Touch Orbit: ON'}
@@ -1987,7 +2080,7 @@ export default function App() {
             <button
               onClick={toggleProjectionMode}
               title="Toggle Projection"
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold feather-btn shadow-md ${
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-bold feather-btn shadow-md ${
                 isOrthographicMode ? 'bg-indigo-600 text-white' : 'feather-panel text-zinc-700 dark:text-zinc-300'
               }`}
             >
@@ -2248,17 +2341,6 @@ export default function App() {
                 }
               }
             }}
-          />
-
-          {/* 3D Model Library Modal */}
-          <ModelLibraryModal
-            isOpen={isModelLibraryOpen}
-            onClose={() => setIsModelLibraryOpen(false)}
-            activeModelName={activeModelName}
-            onSelectPreset={loadPresetModel}
-            onImportCustomModel={handleImportCustomModel}
-            onClearModel={clearModel}
-            hasActiveModel={hasActiveModel}
           />
 
           {/* Stage Panel */}
